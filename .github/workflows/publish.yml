@@ -62,7 +62,7 @@ jobs:
       - name: npm pack (prepack builds dist/)
         run: |
           mkdir pkg && npm pack --pack-destination pkg
-          test -f "pkg/cryptolike-sdk-${GITHUB_REF_NAME#v}.tgz"
+          test -f "pkg/cryptolike-${GITHUB_REF_NAME#v}.tgz"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: package
@@ -100,5 +100,5 @@ jobs:
             echo "published=1" >>"$GITHUB_OUTPUT"
           fi
       # A tarball is published as built: no lifecycle script runs here; npm attaches provenance.
-      - run: npm publish --access public "pkg/cryptolike-sdk-${GITHUB_REF_NAME#v}.tgz"
+      - run: npm publish --access public "pkg/cryptolike-${GITHUB_REF_NAME#v}.tgz"
         if: steps.registry.outputs.published != '1'
