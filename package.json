@@ -1,0 +1,49 @@
+{
+  "name": "cryptolike",
+  "version": "0.1.0",
+  "description": "Official server-side SDK for the CryptoLike merchant API: signed requests (HMAC-SHA256), automatic Idempotency-Key, retries with backoff, typed resources generated from the OpenAPI spec, and webhook signature verification.",
+  "license": "MIT",
+  "author": { "name": "CryptoLike team", "url": "https://cryptolike.net" },
+  "homepage": "https://github.com/Cryptolike-net/cryptolike-node#readme",
+  "repository": { "type": "git", "url": "git+https://github.com/Cryptolike-net/cryptolike-node.git" },
+  "bugs": { "url": "https://github.com/Cryptolike-net/cryptolike-node/issues" },
+  "keywords": ["cryptolike", "crypto", "cryptocurrency", "crypto-payments", "payment-gateway", "payments", "bitcoin", "usdt", "invoices", "webhooks", "hmac", "api-client", "sdk", "typescript"],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./schema": {
+      "types": "./dist/schema.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "generate": "openapi-typescript \"${OPENAPI_SPEC:?set OPENAPI_SPEC to the path or URL of the CryptoLike OpenAPI document - the API does not serve it in production; the generated types ship in src/schema.d.ts}\" -o src/schema.d.ts --alphabetize",
+    "build": "tsc -p tsconfig.json && cp src/schema.d.ts dist/schema.d.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --import tsx test/*.test.ts",
+    "pack": "mkdir -p pack && npm pack --pack-destination ./pack",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "openapi-typescript": "^7.4.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
