@@ -22,6 +22,8 @@ export type {
   InvoiceDetail,
   InvoiceStatus,
   CreateInvoiceRequest,
+  InvoiceCoinOptions,
+  CoinOption,
   StaticAddress,
   StaticAddressCard,
   CreateAddressRequest,

@@ -1243,7 +1243,8 @@ export interface paths {
          * Report job status and download link
          * @description A statement job of the signed-in merchant: `queued` → `running` → `done` (with
          *     `download_url` valid until `download_expires_at`, 24 h after completion) or `failed`
-         *     (`error` says why). Another merchant's job is 404. Every role. `download_url` is the
+         *     (`error` says why). Another merchant's job is 404. Role with `transactions.export` (owner,
+         *     admin, finance — AUTH-01), otherwise 403. `download_url` is the
          *     signed-in route `/v1/account/reports/{id}/file`, never a presigned storage URL.
          */
         get: operations["accountReportJob"];
@@ -1268,7 +1269,7 @@ export interface paths {
          *     With object storage the answer is `302` to a presigned link that lives 5 minutes, minted
          *     for this request (`Cache-Control: no-store`, `Referrer-Policy: no-referrer`); a storage
          *     that cannot presign streams the file (`200`). 404 before the job is done and after the
-         *     file expired. Every role, own merchant only.
+         *     file expired. Own merchant only, role with `transactions.export` (AUTH-01), otherwise 403.
          */
         get: operations["accountReportFile"];
         put?: never;
@@ -1323,8 +1324,12 @@ export interface paths {
          *     the answer is **202** with a report job (`Location: /v1/account/reports/{id}`; `json`
          *     becomes an `xlsx` job) — the file arrives by e-mail and on the job page with a 24 h link.
          *     An identical request while the job is queued/running returns the same job; at most 5
-         *     jobs in progress per user (429). Every role — the statement of the signed-in merchant
-         *     only.
+         *     jobs in progress per user (429). The statement of the signed-in merchant only. **Roles**
+         *     (AUTH-01): every role reads `format=json` (totals, `rows=true` pages); a file (`csv`,
+         *     `xlsx`, `html`), `async=true` and a `json` request that would become a job (beyond the
+         *     synchronous limits) need `transactions.export` (owner, admin, finance) — otherwise **403**
+         *     `details.action=transactions.export`, nothing is queued; under load a role without it
+         *     gets 429 instead of a job.
          *
          *     **Load**: a synchronous statement takes a slot of the instance's
          *     report gate (settings `reports_max_concurrent`); when every slot stays taken for 3 s the
@@ -2212,11 +2217,50 @@ export interface paths {
         get: operations["accountWithdrawalSettingsGet"];
         /**
          * Update withdrawal settings (owner/admin, 2FA)
-         * @description `whitelist_enforced` (only whitelisted destinations, API keys included) and `dual_approval_threshold` per coin (`{"btc:BTC": "0.5"}`; `null` = off).
+         * @description `whitelist_enforced` (only whitelisted destinations, API keys included) and
+         *     `dual_approval_threshold` per coin (`{"btc:BTC": "0.5"}`; `{}` = the account's own
+         *     thresholds removed — the platform's apply; absent / `null` = unchanged).
+         *
+         *     **Direction matters (SEC-MP-01).** A tightening — enforcement on, a threshold lowered or
+         *     added — is in force at once; so is the reset `{}` when the platform's thresholds are as
+         *     strict or stricter for every coin (the account's own thresholds are removed at once and
+         *     the account follows the platform's from then on). A relaxation — enforcement off, a
+         *     threshold raised or removed, the reset to a laxer platform value — is **not**: it is filed and takes effect after `whitelist_delay_seconds` (the
+         *     delay of a new whitelist address), listed in `pending_changes` with its `effective_at`
+         *     until then. A request mixing both writes the tightened part now and files the rest. The
+         *     relaxation is journalled (`payout_controls_relax_filed`), mailed and sent to Telegram to
+         *     the members who create payouts, and alerted to the platform; it can be cancelled until
+         *     `effective_at`. A new request on a setting supersedes its pending relaxation. While a
+         *     relaxation is pending and for the cool-down after it took effect, payouts go to review.
+         *     Refused (`409 account_frozen`) while the account is frozen if the request relaxes anything.
          */
         put: operations["accountWithdrawalSettingsUpdate"];
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/account/withdrawals/settings/changes/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Cancel a pending relaxation of the withdrawal settings
+         * @description Cancels a relaxation listed in `pending_changes` before its `effective_at`: the value in
+         *     force stays (SEC-MP-01). Cancelling only keeps the stricter setting, so every member who
+         *     creates payouts may do it (owner, admin, finance — the people it was announced to), without
+         *     a 2FA code. Journalled (`payout_controls_relax_cancelled`) and alerted. Already in force,
+         *     cancelled or unknown → 404.
+         */
+        delete: operations["accountWithdrawalSettingsChangeCancel"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2663,6 +2707,60 @@ export interface paths {
          *     Permission `create_invoice`.
          */
         post: operations["cancelInvoice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/invoices/{id}/coin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Choose the coin of an invoice without a coin
+         * @description Fixes the coin of an invoice created without `coin_id` — the same choice the payer makes on the
+         *     checkout page (`POST /v1/checkout/{invoice_id}/coin`, one domain operation with the same refusals):
+         *     allocates the deposit address and, for a fiat amount, prices it now and locks the rate for the TTL
+         *     (a `coin-options` estimate is informative only). The open checkout page switches to the payment at
+         *     once. Only once and only while the invoice is `new` — otherwise `409` (a second choice, also with the
+         *     same coin, is `409`; retry with the same `Idempotency-Key` to get the first answer back). A coin that
+         *     is not among the coin options (outside the invoice's set, not offered for invoices, under
+         *     maintenance) is `400` (`coin_id`); `503` when the rate feed is down or the coin cannot issue an
+         *     address right now (retry). Permission `create_invoice`. Another merchant's invoice is `404`.
+         */
+        post: operations["selectInvoiceCoin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/invoices/{id}/coin-options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Coins the payer may choose for an invoice without a coin
+         * @description For an invoice created without `coin_id`: the coins the payer may pay with and the informative `≈`
+         *     amount in each — exactly the `coin_options` of `GET /v1/checkout/{invoice_id}` (one computation:
+         *     your coins available for invoices that match `currency`, narrowed by `allowed_coin_ids`, coins under
+         *     maintenance left out; the estimate priced like the choice). Use it to show the choice in your own
+         *     UI and fix it with `POST /v1/invoices/{id}/coin`. Estimates are `null` once the invoice is no longer
+         *     `new`. `409` when the coin is already chosen (`details.coin_id`) — the invoice then carries
+         *     `address`, `payment_uri` and `qr_payload`. Permission `read`. Another merchant's invoice is `404`.
+         */
+        get: operations["getInvoiceCoinOptions"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3209,6 +3307,27 @@ export interface components {
             /** @description Fresh TOTP code (step-up 2FA for this action). */
             totp_code: string;
         };
+        /** @description One coin the payer may choose on an invoice without a coin. */
+        CheckoutCoinOption: {
+            coin_id: components["schemas"]["Uuid"];
+            confirmations: number;
+            decimals: number;
+            /** @description UI text for a missing estimate; `null` with an estimate. */
+            estimate_message: components["schemas"]["CheckoutText"] | null;
+            /** @description Why `estimated_amount` is `null`: `rate_stale` | `rate_unavailable` | `below_min` | `above_max` | `converts_to_zero` | `too_many_decimals`. */
+            estimate_reason: string | null;
+            /** @description Informative `≈` amount in the coin if chosen now — priced exactly as the choice (same rate, spread, rounding up, payer-paid fee). The choice prices again and locks its rate. `null` when it cannot be priced now (`estimate_reason`) or the invoice is no longer `new`; the coin can still be chosen. */
+            estimated_amount: string | null;
+            name: string;
+            network: components["schemas"]["Network"];
+            network_name: string;
+            /**
+             * Format: date-time
+             * @description When the rate behind `estimated_amount` was quoted (fiat amounts only).
+             */
+            rate_as_of: string | null;
+            ticker: string;
+        };
         /**
          * @description Widget block (https://cryptolike.net/docs/widget). `allowed` — the request's `Origin` header is on the merchant's embed
          *     allowlist (the list itself is never returned; without an `Origin` it is `false`). `mode` and the
@@ -3242,26 +3361,7 @@ export interface components {
                 payer_amount: components["schemas"]["Decimal"];
                 ticker: string;
             } | null;
-            coin_options: {
-                coin_id: components["schemas"]["Uuid"];
-                confirmations: number;
-                decimals: number;
-                /** @description UI text for a missing estimate; `null` with an estimate. */
-                estimate_message: components["schemas"]["CheckoutText"] | null;
-                /** @description Why `estimated_amount` is `null`: `rate_stale` | `rate_unavailable` | `below_min` | `above_max` | `converts_to_zero` | `too_many_decimals`. */
-                estimate_reason: string | null;
-                /** @description Informative `≈` amount in the coin if chosen now — priced exactly as the choice (same rate, spread, rounding up, payer-paid fee). The choice prices again and locks its rate. `null` when it cannot be priced now (`estimate_reason`) or the invoice is no longer `new`; the coin can still be chosen. */
-                estimated_amount: string | null;
-                name: string;
-                network: components["schemas"]["Network"];
-                network_name: string;
-                /**
-                 * Format: date-time
-                 * @description When the rate behind `estimated_amount` was quoted (fiat amounts only).
-                 */
-                rate_as_of: string | null;
-                ticker: string;
-            }[] | null;
+            coin_options: components["schemas"]["CheckoutCoinOption"][] | null;
             confirmations: {
                 current: number;
                 required: number;
@@ -3288,7 +3388,9 @@ export interface components {
             order_id?: string;
             overpaid_amount: components["schemas"]["Decimal"];
             paid_amount: components["schemas"]["Decimal"];
+            /** @description Wallet link with the amount still owed (BIP-21 / EIP-681 / `tron:`) — "Open in wallet", and the page's opt-in "QR with amount" on Bitcoin and Litecoin. `null` without an address. */
             payment_uri: string | null;
+            /** @description What the payment QR encodes by default — the bare address (equal to `address`) on every network, never a scheme or an amount (exchange withdrawal forms accept an address only). `null` without an address. */
             qr_payload: string | null;
             remaining_amount: components["schemas"]["Decimal"];
             return_url: string | null;
@@ -3777,7 +3879,11 @@ export interface components {
          *       "ttl_expires_at": "2026-09-16T12:30:00Z",
          *       "expired_at": null,
          *       "created_at": "2026-09-16T12:00:00Z",
-         *       "updated_at": "2026-09-16T12:00:00Z"
+         *       "updated_at": "2026-09-16T12:00:00Z",
+         *       "payment_uri": "tron:TXYZopYRdj2D9XRtbG411XZZ3kM5VW9t7g?amount=49.9&token=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+         *       "qr_payload": "TXYZopYRdj2D9XRtbG411XZZ3kM5VW9t7g",
+         *       "confirmations": null,
+         *       "required_confirmations": 20
          *     }
          */
         Invoice: {
@@ -3797,6 +3903,8 @@ export interface components {
             checkout_url: string;
             /** @description Coin the payer pays with; `null` until chosen. */
             coin_id: string | null;
+            /** @description Confirmations of the least-confirmed transfer to the address that is on the chain now (checkout `confirmations.current`); `null` until the coin is chosen or while nothing was seen. */
+            confirmations: number | null;
             created_at: components["schemas"]["Timestamp"];
             /** @description Denomination requested at creation (ticker or fiat code). */
             currency: string;
@@ -3820,17 +3928,41 @@ export interface components {
             paid_amount: components["schemas"]["Decimal"];
             /** @description What the payer must send (includes the fee when `fee_paid_by = payer`). */
             payer_amount: string | null;
+            /**
+             * @description Wallet link for the payer, exactly as `payment_uri` of `GET /v1/checkout/{invoice_id}` (one
+             *     computation): `bitcoin:<address>?amount=<BTC>` / `litecoin:…` (BIP-21),
+             *     `ethereum:<address>?value=<wei>` or `ethereum:<contract>/transfer?address=<address>&uint256=<units>`
+             *     (EIP-681, ETH / ERC20), `tron:<address>?amount=<amount>[&token=<contract>]` (TRX / TRC20). The amount
+             *     is what is still owed (`remaining_amount`, or `payer_amount` before any payment). Use it for "Open in
+             *     wallet" and, on the payer's choice, for a QR with the amount (BIP-21 on Bitcoin and Litecoin is read
+             *     by wallets; exchanges refuse it — the default QR is `qr_payload`). `null` until the coin is chosen.
+             */
+            payment_uri: string | null;
+            /**
+             * @description What to encode in the payment QR code, as `qr_payload` of the checkout view: the bare deposit address
+             *     (equal to `address`) on every network — never a URI scheme or an amount. Many payers send from an
+             *     exchange, and an exchange withdrawal form accepts an address only. Show the amount next to the QR
+             *     with a copy button. For a "QR with amount" in wallets (an opt-in on your page; BIP-21 on Bitcoin
+             *     and Litecoin), encode `payment_uri` instead. `null` until the coin is chosen.
+             */
+            qr_payload: string | null;
             /** @description 1 coin = rate_locked fiat, fixed for the TTL. */
             rate_locked: string | null;
             /** Format: date-time */
             rate_locked_at: string | null;
             remaining_amount: components["schemas"]["Decimal"];
+            /** @description Confirmations the coin needs before a transfer is credited (checkout `confirmations.required`); `null` until the coin is chosen. */
+            required_confirmations: number | null;
             return_url: string | null;
             status: components["schemas"]["InvoiceStatus"];
             ticker: string | null;
             ttl_expires_at: components["schemas"]["Timestamp"];
             updated_at: components["schemas"]["Timestamp"];
             webhook_url: string | null;
+        };
+        InvoiceCoinOptions: {
+            /** @description The coins the payer may choose from — the `coin_options` of `GET /v1/checkout/{invoice_id}` (same list, same estimates). */
+            coin_options: components["schemas"]["CheckoutCoinOption"][];
         };
         InvoiceDetail: components["schemas"]["Invoice"] & {
             events: components["schemas"]["InvoiceEvent"][];
@@ -3877,6 +4009,8 @@ export interface components {
             /** Format: int64 */
             size_bytes: number;
             uploaded_at: components["schemas"]["Timestamp"];
+            /** @description CryptoLike support uploaded the document for the account (it was sent to support by e-mail); false for an upload from the cabinet. */
+            uploaded_by_support: boolean;
         };
         /** @enum {string} */
         KybDocumentKind: "registration" | "director_id" | "proof_of_address" | "ownership" | "other";
@@ -4136,6 +4270,14 @@ export interface components {
             events: components["schemas"]["SecurityEvent"][];
             /** Format: int64 */
             next_before: number | null;
+        };
+        /**
+         * @example {
+         *       "coin_id": "6f1c2a3e-8d4b-4c5a-9e7f-0a1b2c3d4e5f"
+         *     }
+         */
+        SelectInvoiceCoinRequest: {
+            coin_id: components["schemas"]["Uuid"];
         };
         SessionResponse: {
             csrf_token: string;
@@ -4785,6 +4927,30 @@ export interface components {
             total_amount: components["schemas"]["Decimal"];
             total_debit: components["schemas"]["Decimal"];
         };
+        /**
+         * @description A requested relaxation of the payout controls (SEC-MP-01): `whitelist_enforced` switched
+         *     off, or `dual_approval_threshold` raised / removed for a coin / reset to the platform's.
+         *     It takes effect at `effective_at` (request + `whitelist_delay_seconds`) unless cancelled
+         *     (`DELETE /v1/account/withdrawals/settings/changes/{id}`) or superseded by a newer request on
+         *     the same setting; until then the value in force stays and payouts go to review.
+         */
+        WithdrawalControlChange: {
+            /** @description The thresholds after `effective_at` (`setting=dual_approval_threshold`; with `reset` — the platform's as of now). */
+            dual_approval_threshold: {
+                [key: string]: components["schemas"]["Decimal"];
+            } | null;
+            /** Format: date-time */
+            effective_at: string;
+            id: components["schemas"]["Uuid"];
+            /** Format: date-time */
+            requested_at: string;
+            /** @description The account's own thresholds are removed (the platform's apply). */
+            reset: boolean;
+            /** @enum {string} */
+            setting: "whitelist_enforced" | "dual_approval_threshold";
+            /** @description The value after `effective_at` (`setting=whitelist_enforced`). */
+            whitelist_enforced: boolean | null;
+        };
         WithdrawalDetail: components["schemas"]["Withdrawal"] & {
             events: components["schemas"]["WithdrawalEvent"][];
         };
@@ -4827,12 +4993,15 @@ export interface components {
         /** @enum {string} */
         WithdrawalReviewReason: "limit" | "pattern" | "manual" | "compliance" | "signer_limit";
         WithdrawalSettings: {
-            /** @description Per coin (`network:TICKER`); a user-created withdrawal above it needs a second owner/admin. */
+            /** @description In force now. Per coin (`network:TICKER`); a user-created withdrawal above it needs a second owner/admin. */
             dual_approval_threshold: {
                 [key: string]: components["schemas"]["Decimal"];
             } | null;
-            /** @description Activation delay of a new whitelist entry. */
+            /** @description Relaxations requested and not yet in force (oldest deadline first): each takes effect at `effective_at` unless cancelled. */
+            pending_changes: components["schemas"]["WithdrawalControlChange"][];
+            /** @description Activation delay of a new whitelist entry — and of a relaxation of these settings (SEC-MP-01). */
             whitelist_delay_seconds: number;
+            /** @description In force now. */
             whitelist_enforced: boolean;
         };
         /**
@@ -6918,6 +7087,7 @@ export interface operations {
             };
             400: components["responses"]["ValidationError"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
         };
     };
@@ -6953,6 +7123,7 @@ export interface operations {
             };
             400: components["responses"]["ValidationError"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
         };
     };
@@ -7036,6 +7207,7 @@ export interface operations {
             };
             400: components["responses"]["ValidationError"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
             429: components["responses"]["RateLimited"];
             504: components["responses"]["Timeout"];
         };
@@ -7426,7 +7598,7 @@ export interface operations {
                 "application/json": {
                     password: string;
                     /** @description Fresh TOTP code of the owner — required (the server answers 400 mfa_required without it). */
-                    totp_code?: string;
+                    totp_code: string;
                     user_id: components["schemas"]["Uuid"];
                 };
             };
@@ -8409,8 +8581,35 @@ export interface operations {
             400: components["responses"]["ValidationError"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
             429: components["responses"]["RateLimited"];
             503: components["responses"]["Unavailable"];
+        };
+    };
+    accountWithdrawalSettingsChangeCancel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The settings after the cancellation. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WithdrawalSettings"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
         };
     };
     accountWithdrawalWhitelistList: {
@@ -9120,6 +9319,73 @@ export interface operations {
             409: components["responses"]["Conflict"];
             413: components["responses"]["PayloadTooLarge"];
             422: components["responses"]["IdempotencyMismatch"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    selectInvoiceCoin: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Up to 128 printable ASCII characters; the same key with the same request replays the stored success response for 24 h. A 4xx is not stored (nothing was created) — the retry executes again; a 5xx is stored and replayed like a success, so a request is never executed twice (https://cryptolike.net/docs/auth §7). */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SelectInvoiceCoinRequest"];
+            };
+        };
+        responses: {
+            /** @description The invoice with its coin, address, `payment_uri` and `qr_payload`. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Invoice"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            422: components["responses"]["IdempotencyMismatch"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    getInvoiceCoinOptions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["Id"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The coin options. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvoiceCoinOptions"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             429: components["responses"]["RateLimited"];
             503: components["responses"]["Unavailable"];
         };

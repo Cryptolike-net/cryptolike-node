@@ -15,6 +15,8 @@ export type Invoice = Schemas["Invoice"];
 export type InvoiceDetail = Schemas["InvoiceDetail"];
 export type InvoiceStatus = Schemas["InvoiceStatus"];
 export type CreateInvoiceRequest = Schemas["CreateInvoiceRequest"];
+export type InvoiceCoinOptions = Schemas["InvoiceCoinOptions"];
+export type CoinOption = Schemas["CheckoutCoinOption"];
 export type StaticAddress = Schemas["StaticAddress"];
 export type StaticAddressCard = Schemas["StaticAddressCard"];
 export type CreateAddressRequest = Schemas["CreateAddressRequest"];
@@ -309,6 +311,23 @@ export class CryptoLike {
       this.paginate((cursor) => this.invoices.list({ ...(query ?? {}), cursor })),
     /** Only status `new` can be cancelled (otherwise `409 conflict`). */
     cancel: (id: string, idempotencyKey?: string): Promise<Invoice> => this.request("POST", `/v1/invoices/${encodeURIComponent(id)}/cancel`, { idempotencyKey }),
+    /**
+     * Coins the payer may choose for an invoice created without `coin_id` — the list of the payment page,
+     * with the informative `≈` amount in each (`estimated_amount`; `null` with `estimate_reason` when it
+     * cannot be priced now — the coin can still be chosen). Show it in your own UI and fix the choice with
+     * `selectCoin`. `409 conflict` (`details.coin_id`) once the coin is chosen. Permission `read`.
+     */
+    coinOptions: (id: string): Promise<InvoiceCoinOptions> => this.request("GET", `/v1/invoices/${encodeURIComponent(id)}/coin-options`),
+    /**
+     * Fixes the coin of an invoice created without `coin_id` — the same choice as the payer's on the payment
+     * page: allocates the address, prices a fiat amount now and locks the rate. Answers the invoice with
+     * `address`, `payer_amount`, `payment_uri`, `qr_payload` and `required_confirmations`. Only once and only
+     * while the invoice is `new` (otherwise `409`, also with the same coin); a coin outside `coinOptions` is
+     * `400` (`field === "coin_id"`); `503` (rate or address not available right now) is retried with the same
+     * `idempotencyKey`, which defaults to a random UUID. Permission `create_invoice`.
+     */
+    selectCoin: (id: string, coinId: string, idempotencyKey?: string): Promise<Invoice> =>
+      this.request("POST", `/v1/invoices/${encodeURIComponent(id)}/coin`, { body: { coin_id: coinId } satisfies Schemas["SelectInvoiceCoinRequest"], idempotencyKey }),
     /** The whole filtered list as CSV text. */
     exportCsv: (query?: Omit<Query<"listInvoices">, "cursor" | "limit" | "format">): Promise<string> =>
       this.request("GET", "/v1/invoices", { query: { ...(query ?? {}), format: "csv" }, headers: { Accept: "text/csv" } }),

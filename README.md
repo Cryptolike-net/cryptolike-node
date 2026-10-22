@@ -27,6 +27,14 @@ The secret lives in a `#private` field, so it is redacted from `console.log(clie
 npm install cryptolike
 ```
 
+The package is **ESM only** (Node.js ≥ 18): load it with `import`. It exports no CommonJS entry, so
+`require("cryptolike")` fails with `ERR_PACKAGE_PATH_NOT_EXPORTED` — on Node.js 22 too. From a
+CommonJS module, use a dynamic import inside an async function:
+
+```js
+const { CryptoLike, verifyWebhook } = await import("cryptolike");
+```
+
 ## Quickstart — to the first confirmed payment
 
 ```ts
@@ -69,7 +77,7 @@ Full examples: [`examples/create-payment.ts`](examples/create-payment.ts), [`exa
 
 | Resource | Methods |
 |---|---|
-| `api.invoices` | `create(body, idempotencyKey?)`, `get(id)`, `list(query)`, `iterate(query)`, `cancel(id)`, `exportCsv(query)` |
+| `api.invoices` | `create(body, idempotencyKey?)`, `get(id)`, `list(query)`, `iterate(query)`, `cancel(id)`, `exportCsv(query)`, `coinOptions(id)`, `selectCoin(id, coinId, idempotencyKey?)` |
 | `api.addresses` | `create`, `get(id, {limit, cursor})`, `list`, `iterate`, `archive(id)`, `restore(id)` |
 | `api` (archive) | `archiveStaticAddress(id)`, `restoreStaticAddress(id)`, `listArchivedStaticAddresses(q)`, `iterateArchivedStaticAddresses(q)` |
 | `api.transactions` | `list`, `iterate`, `get`, `exportCsv` |
@@ -114,6 +122,56 @@ The server keeps the ids you offer for invoices («Available for invoices» in t
 that match `currency`, drops the rest; none left → `ApiError` 422 `no_allowed_coins`
 (`field === "allowed_coin_ids"`). Not combinable with `coin_id` (400). An empty array is refused
 before the request (`TypeError`) — a filter that found nothing never turns into "every coin".
+
+## Your own payment page (host-to-host)
+
+Instead of sending the payer to `checkout_url` you can show the payment inside your own checkout
+([Host-to-host guide](https://cryptolike.net/docs/h2h)). Every call below runs **on your server**;
+your page receives only what it renders.
+
+```ts
+// 1. An invoice without coin_id — the payer picks the coin on your page.
+const inv = await api.invoices.create({ amount: "49.90", currency: "USD", order_id: "A-1001" }, "order-A-1001");
+
+// 2. The coins to offer, each with an informative ≈ amount (null + estimate_reason when it cannot be priced now).
+const { coin_options } = await api.invoices.coinOptions(inv.id);
+render(coin_options.map((o) => ({ id: o.coin_id, label: `${o.ticker} · ${o.network_name}`, approx: o.estimated_amount })));
+
+// 3. The payer's choice fixes the coin, the address and — for a fiat amount — the rate.
+//    One key per (invoice, coin): a retry replays the first answer instead of choosing twice.
+const pay = await api.invoices.selectCoin(inv.id, chosenCoinId, `select-${inv.id}-${chosenCoinId}`);
+
+// 4. The payment block of your page.
+show({
+  network: pay.network,                  // name the network next to the address — a transfer on another network is lost
+  address: pay.address,                  // with a copy button
+  amount: `${pay.payer_amount} ${pay.ticker}`, // exactly this amount, with a copy button
+  qr: pay.qr_payload,                    // the bare address on every network (exchanges refuse a URI) — keep the amount next to it
+  walletLink: pay.payment_uri,           // "Open in wallet"
+  expiresAt: pay.ttl_expires_at,         // countdown
+});
+
+// 5. Progress for the page: poll from your server (the browser never talks to the API).
+const now = await api.invoices.get(inv.id);
+progress(now.status, now.confirmations, now.required_confirmations, now.remaining_amount, now.payment_uri);
+```
+
+- **Fulfil the order on the `invoice.paid` webhook only** (verified as below), never on what the
+  page shows. `underpaid` — the payer may top up to the same address until `ttl_expires_at`: show
+  `remaining_amount`, `payment_uri` already asks for the remainder. `overpaid_amount` above zero —
+  credited, settle the difference with the customer. `late_payment: true` — a transfer after the
+  invoice closed was credited; decide whether to fulfil or refund.
+- `qr_payload` is the bare address on every network (never a scheme or an amount): many payers send from
+  an exchange, and its withdrawal form accepts an address only. To offer a "QR with amount" for
+  wallets (BIP-21, Bitcoin/Litecoin), encode `payment_uri` on the payer's choice.
+- `payment_uri`, `qr_payload`, `confirmations` and `required_confirmations` are `null` until the
+  coin is chosen; `confirmations` stays `null` while nothing was seen on the chain. Webhook payloads
+  do not carry them — read the invoice.
+- `selectCoin` refusals: `409 conflict` — the coin is already chosen (also with the same coin) or
+  the invoice is no longer `new`: read the invoice; `400` with `field === "coin_id"` — the coin is
+  not among `coinOptions`; `503` — the rate or an address is not available right now: the SDK
+  retries it with the same key. `coinOptions` on an invoice with a coin is `409`
+  (`details.coin_id`).
 
 ## Errors
 

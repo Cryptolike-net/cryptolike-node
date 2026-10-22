@@ -80,6 +80,8 @@ test("every resource hits the documented route", async () => {
     [api.currencies.list(), "GET", "/v1/currencies"],
     [api.rates.list({ fiat: "EUR" }), "GET", "/v1/rates?fiat=EUR"],
     [api.balances.list(), "GET", "/v1/balances"],
+    [api.invoices.coinOptions("i1"), "GET", "/v1/invoices/i1/coin-options"],
+    [api.invoices.selectCoin("i1", "c"), "POST", "/v1/invoices/i1/coin"],
     [api.addresses.create({ coin_id: "c", customer_id: "u1" }), "POST", "/v1/addresses"],
     [api.addresses.get("a1", { limit: 5 }), "GET", "/v1/addresses/a1?limit=5"],
     [api.addresses.list({ customer_id: "u1" }), "GET", "/v1/addresses?customer_id=u1"],
@@ -454,4 +456,81 @@ test("allowed_coin_ids — sent as given, read back, 422 not retried, empty arra
 
   const cur = await api.currencies.list();
   assert.deepEqual(cur.currencies.map((c) => c.invoice_enabled), [true, false, undefined]);
+});
+
+// Your own payment page (host-to-host): the coin options of an invoice without a coin, the choice, the payment block.
+const H2H_INVOICE = {
+  id: "0b6c8f2e-3a1d-4e5f-9a7b-1c2d3e4f5a6b", status: "new", currency: "USD", amount: "49.90", coin_id: "c-btc", ticker: "BTC", network: "bitcoin",
+  address: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4", payer_amount: "0.00081234", amount_crypto: "0.00080584", ttl_expires_at: "2026-10-18T12:30:00Z",
+  payment_uri: "bitcoin:bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4?amount=0.00081234",
+  qr_payload: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4", confirmations: null, required_confirmations: 2,
+};
+
+test("invoices.coinOptions / selectCoin: signed routes, coin_id body, Idempotency-Key, payment block read back", async () => {
+  const fx = fakeFetch([
+    () => json(200, { coin_options: [
+      { coin_id: "c-usdt", ticker: "USDT", name: "Tether USD", network: "tron", network_name: "TRON (TRC-20)", decimals: 6, confirmations: 19,
+        estimated_amount: "49.900000", estimate_reason: null, estimate_message: null, rate_as_of: "2026-10-18T12:00:00Z" },
+      { coin_id: "c-btc", ticker: "BTC", name: "Bitcoin", network: "bitcoin", network_name: "Bitcoin", decimals: 8, confirmations: 2,
+        estimated_amount: null, estimate_reason: "rate_stale", estimate_message: { key: "checkout.estimate.rate_stale", default: "Estimate unavailable" }, rate_as_of: null },
+    ] }),
+    () => json(200, H2H_INVOICE),
+    () => json(200, H2H_INVOICE),
+  ]);
+  const api = client(fx);
+  const id = H2H_INVOICE.id;
+
+  const { coin_options } = await api.invoices.coinOptions(id);
+  assert.deepEqual(coin_options.map((o) => [o.coin_id, o.estimated_amount, o.estimate_reason]), [["c-usdt", "49.900000", null], ["c-btc", null, "rate_stale"]]);
+  assert.equal(typeof coin_options[0].estimated_amount, "string", "amounts stay strings");
+  assert.equal(fx.seen[0].method, "GET");
+  assert.equal(fx.seen[0].url, `https://api.test/v1/invoices/${id}/coin-options`);
+  assert.equal(fx.seen[0].body, undefined);
+  assert.equal(fx.seen[0].headers["Idempotency-Key"], undefined);
+
+  const inv = await api.invoices.selectCoin(id, "c-btc", `select-${id}-c-btc`);
+  const r = fx.seen[1];
+  assert.equal(r.method, "POST");
+  assert.equal(r.url, `https://api.test/v1/invoices/${id}/coin`);
+  assert.equal(r.body, '{"coin_id":"c-btc"}');
+  assert.equal(r.headers["Idempotency-Key"], `select-${id}-c-btc`);
+  assert.equal(r.headers["X-Signature"], sign(SECRET, 1758000000, "POST", `/v1/invoices/${id}/coin`, '{"coin_id":"c-btc"}'));
+  assert.equal(inv.payment_uri, H2H_INVOICE.payment_uri);
+  assert.equal(inv.qr_payload, "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
+  assert.equal(inv.confirmations, null);
+  assert.equal(inv.required_confirmations, 2);
+  assert.equal(inv.payer_amount, "0.00081234");
+
+  await api.invoices.selectCoin(id, "c-btc");
+  assert.match(fx.seen[2].headers["Idempotency-Key"], /^[0-9a-f-]{36}$/, "auto key when none is given");
+});
+
+test("invoices.selectCoin: 503 retried with the same Idempotency-Key; 409 / 400 surface details and are not retried", async () => {
+  let t = 1758000000;
+  const fx = fakeFetch([
+    () => json(503, { error: { code: "unavailable", message: "rate feed is down" } }),
+    () => json(200, H2H_INVOICE),
+    () => json(409, { error: { code: "conflict", message: "coin already chosen", details: { coin_id: "c-btc" } } }),
+    () => json(400, { error: { code: "validation_error", message: "coin is not among the options", details: { field: "coin_id" } } }),
+  ]);
+  const api = client(fx, { now: () => t++, retryBaseMs: 100, retryMaxMs: 400 });
+  const inv = await api.invoices.selectCoin("i1", "c-btc", "k-1");
+  assert.equal(inv.address, H2H_INVOICE.address);
+  assert.equal(fx.seen.length, 2);
+  assert.deepEqual(fx.seen.map((r) => r.headers["Idempotency-Key"]), ["k-1", "k-1"]);
+  assert.deepEqual(fx.seen.map((r) => r.body), ['{"coin_id":"c-btc"}', '{"coin_id":"c-btc"}']);
+
+  await assert.rejects(api.invoices.coinOptions("i1"), (e: unknown) => {
+    assert.ok(e instanceof ApiError);
+    assert.equal(e.status, 409);
+    assert.equal(e.details?.coin_id, "c-btc");
+    return true;
+  });
+  await assert.rejects(api.invoices.selectCoin("i1", "c-x"), (e: unknown) => {
+    assert.ok(e instanceof ApiError);
+    assert.equal(e.status, 400);
+    assert.equal(e.field, "coin_id");
+    return true;
+  });
+  assert.equal(fx.seen.length, 4, "4xx is not retried");
 });

@@ -1,6 +1,6 @@
 {
   "name": "cryptolike",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Official server-side SDK for the CryptoLike merchant API: signed requests (HMAC-SHA256), automatic Idempotency-Key, retries with backoff, typed resources generated from the OpenAPI spec, and webhook signature verification.",
   "license": "MIT",
   "author": { "name": "CryptoLike team", "url": "https://cryptolike.net" },
