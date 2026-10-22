@@ -99,6 +99,7 @@ jobs:
             echo "::notice::cryptolike@${GITHUB_REF_NAME#v} is already on npm — nothing to publish"
             echo "published=1" >>"$GITHUB_OUTPUT"
           fi
-      # A tarball is published as built: no lifecycle script runs here; npm attaches provenance.
-      - run: npm publish --access public "pkg/cryptolike-${GITHUB_REF_NAME#v}.tgz"
+      # A tarball is published as built: no lifecycle script runs here; npm attaches provenance. The "./" matters:
+      # npm reads a bare "pkg/<tarball>" as the GitHub repository pkg/<tarball> (the v0.2.0 run failed with a git error).
+      - run: npm publish --access public "./pkg/cryptolike-${GITHUB_REF_NAME#v}.tgz"
         if: steps.registry.outputs.published != '1'

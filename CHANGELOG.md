@@ -3,7 +3,12 @@
 All notable changes of this SDK. Versions follow SemVer; the API contract itself (v1) changes only
 additively — see https://cryptolike.net/docs/api.
 
-## 0.2.0 — 2026-10-22
+## 0.2.1 — 2026-10-22
+
+- Same code as 0.2.0. The release workflow published the tarball path without `./`, which npm read as a
+  GitHub repository, so 0.2.0 was tagged but never reached npm; 0.2.1 is the first npm release with the changes below.
+
+## 0.2.0 — 2026-10-22 (tagged, not on npm)
 
 - Your own payment page (host-to-host, https://cryptolike.net/docs/h2h):
   - `invoices.coinOptions(id)` — the coins the payer may choose for an invoice created without a coin, each with an
